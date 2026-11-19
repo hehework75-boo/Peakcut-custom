@@ -1386,6 +1386,9 @@ function drawAdd(variant) {
       <div class="ob"><div class="ot">Part of the video</div><div class="range">
         <label>From<input id="o_from" type="number" min="0" placeholder="start" aria-label="From minute">min</label>${ic("arrowr")}
         <label>To<input id="o_to" type="number" min="0" placeholder="end" aria-label="Up to minute">min</label></div></div>
+      <div class="ob wide"><label class="ot" for="o_instructions">What moments should AI find?</label>
+        <textarea id="o_instructions" rows="3" maxlength="500" placeholder="For example: funny, angry, happy or excited moments, or a specific action"></textarea>
+        <div class="ot" style="margin:8px 0 0;font-weight:400">Optional. Leave blank to use PeakCut's usual clip picks.</div></div>
     </div></div></form>`;
   drawAtt();
 }
@@ -1445,7 +1448,7 @@ document.addEventListener("keydown", e => {
 const targetCreator = () => creatorId() || $("#o_creator")?.value || "";
 function jobOptions() {
   const n = id => { const v = $(id).value; return v === "" ? null : Number(v); };
-  const o = {max_clips:n("#o_max"), min_len:n("#o_min"), max_len:n("#o_maxlen"), captions:$("#o_captions").checked, style:$("#o_style").value, layout:$("#o_layout").value, quality:n("#o_quality")};
+  const o = {max_clips:n("#o_max"), min_len:n("#o_min"), max_len:n("#o_maxlen"), captions:$("#o_captions").checked, style:$("#o_style").value, layout:$("#o_layout").value, quality:n("#o_quality"), clip_instructions:$("#o_instructions").value.trim()};
   if (n("#o_from") !== null) o.range_start = n("#o_from") * 60;
   if (n("#o_to") !== null) o.range_end = n("#o_to") * 60;
   return o;

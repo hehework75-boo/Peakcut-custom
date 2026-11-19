@@ -9,6 +9,29 @@ import contextlib
 import contextvars
 
 _uid = contextvars.ContextVar("peakcut_uid", default=None)
+_cancel = contextvars.ContextVar("peakcut_cancel_event", default=None)
+
+
+class Cancelled(RuntimeError):
+    """A background video job was explicitly cancelled by its owner."""
+
+
+def set_cancel_event(event):
+    return _cancel.set(event)
+
+
+def reset_cancel_event(token):
+    _cancel.reset(token)
+
+
+def cancelled():
+    event = _cancel.get()
+    return event is not None and event.is_set()
+
+
+def check_cancelled():
+    if cancelled():
+        raise Cancelled("Cancelled by you.")
 
 
 class NoUser(RuntimeError):
@@ -43,12 +66,15 @@ def as_user(u):
 def bind(fn):
     """Wrap fn so it runs as the current user, even on another thread (threads do not inherit this)."""
     u = _uid.get()
+    event = _cancel.get()
 
     def run(*a, **k):
         token = _uid.set(u)
+        cancel_token = _cancel.set(event)
         try:
             return fn(*a, **k)
         finally:
+            _cancel.reset(cancel_token)
             _uid.reset(token)
 
     return run

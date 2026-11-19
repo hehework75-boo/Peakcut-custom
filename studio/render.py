@@ -1,12 +1,12 @@
 """Turns a time range into a vertical clip: 9:16 layout, bouncy word captions, hook title, cover."""
+import math
 import re
 import shutil
-import subprocess
 import tempfile
 from pathlib import Path
 
-from . import config, roman
-from .media import NO_WINDOW, run
+from . import config, ctx, roman
+from .media import run
 
 W, H = config.OUT_W, config.OUT_H
 
@@ -78,7 +78,25 @@ def install_fonts():
             shutil.copyfile(f, config.FONTS_DIR / f.name)
 
 
-LAYOUTS = {"blur": "Full frame + blurred fill", "zoom": "Zoomed in + blurred fill", "crop": "Fill the screen (centre crop)"}
+LAYOUTS = {"blur": "Full frame + blurred fill", "zoom": "Zoomed in + blurred fill", "crop": "Fill the screen (centre crop)",
+           "split": "Facecam + gameplay (choose areas)"}
+
+
+def clean_rect(value):
+    """A source-video selection as normalized x/y/width/height, clamped to the frame."""
+    if not isinstance(value, dict):
+        raise ValueError("Choose a facecam or gameplay area first.")
+    try:
+        x, y, w, h = (float(value[k]) for k in ("x", "y", "w", "h"))
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("That selected area is not valid.") from None
+    if not all(math.isfinite(v) for v in (x, y, w, h)):
+        raise ValueError("That selected area is not valid.")
+    x, y = max(0.0, min(0.99, x)), max(0.0, min(0.99, y))
+    w, h = max(0.01, min(1.0 - x, w)), max(0.01, min(1.0 - y, h))
+    if w < 0.04 or h < 0.04:
+        raise ValueError("Make the selected area a little larger.")
+    return {"x": round(x, 5), "y": round(y, 5), "w": round(w, 5), "h": round(h, 5)}
 
 
 def _ts(t):
@@ -110,8 +128,10 @@ def _groups(words, per):
 
 def geometry(src_w, src_h, layout):
     """Where the video sits in the 1080x1920 frame, and where hook and captions go."""
-    if src_h >= src_w and layout != "crop":
+    if src_h >= src_w and layout not in ("crop", "split"):
         layout = "crop"  # already vertical or square: nothing to gain from a blurred fill
+    if layout == "split":
+        return layout, H, 640, 1500
     if layout == "blur":
         fg_h = min(H, int(round(W * src_h / src_w / 2)) * 2)
     elif layout == "zoom":
@@ -227,7 +247,22 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     return head + "\n".join(ev) + "\n"
 
 
-def _filter(layout, fg_h):
+def _crop_rect(rect, src_w, src_h, out_w, out_h):
+    r = clean_rect(rect)
+    x, y = int(r["x"] * src_w), int(r["y"] * src_h)
+    cw, ch = max(2, int(r["w"] * src_w)), max(2, int(r["h"] * src_h))
+    x, y = x - x % 2, y - y % 2
+    cw, ch = cw - cw % 2, ch - ch % 2
+    cw, ch = min(cw, src_w - x), min(ch, src_h - y)
+    return f"crop={cw}:{ch}:{x}:{y},scale={out_w}:{out_h}:force_original_aspect_ratio=increase,crop={out_w}:{out_h},setsar=1"
+
+
+def _filter(layout, fg_h, src_w, src_h, clip):
+    if layout == "split":
+        face = _crop_rect(clip.get("face_rect"), src_w, src_h, W, 640)
+        game = _crop_rect(clip.get("gameplay_rect"), src_w, src_h, W, H - 640)
+        return (f"[0:v]fps={config.OUT_FPS},split=2[face0][game0];"
+                f"[face0]{face}[face];[game0]{game}[game];[face][game]vstack=inputs=2,setsar=1[v0];")
     if layout == "crop":
         return f"[0:v]fps={config.OUT_FPS},scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},setsar=1[v0];"
     return (f"[0:v]fps={config.OUT_FPS},split=2[a][b];"
@@ -237,8 +272,62 @@ def _filter(layout, fg_h):
             f"[bg][fg]overlay=0:(H-h)/2,setsar=1[v0];")
 
 
+def _brand_png(path, clip, fallback_name=""):
+    platforms = clip.get("brand_platforms")
+    if platforms is None:
+        old = clip.get("brand_platform", "off")
+        platforms = [old] if old in ("youtube", "twitch", "kick") else []
+    selected = set(p for p in platforms if p in ("youtube", "twitch", "kick"))
+    platforms = [p for p in ("twitch", "youtube", "kick") if p in selected]
+    if not platforms:
+        return None
+    from PIL import Image, ImageDraw, ImageFont
+    name = _clean(clip.get("brand_name") or fallback_name)[:30] or "Creator"
+    if not name.startswith("@"):
+        name = "@" + name
+    font_file = Path(__file__).resolve().parent / "fonts" / FONT_FILES["Poppins ExtraBold"]
+    icon, gap, height = 68, 10, 84
+    name_x = len(platforms) * icon + max(0, len(platforms) - 1) * gap + 18
+    measure = ImageDraw.Draw(Image.new("RGBA", (2, 2)))
+    font_size = 58
+    font = ImageFont.truetype(str(font_file), font_size)
+    while font_size > 36 and measure.textlength(name, font=font) > W - 48 - name_x - 10:
+        font_size -= 2
+        font = ImageFont.truetype(str(font_file), font_size)
+    name_w = int(measure.textlength(name, font=font))
+    width = min(W - 48, name_x + name_w + 10)
+    im = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    kick_logo = Image.open(Path(__file__).resolve().parent / "assets" / "kick-wordmark.jpeg").convert("RGB")
+    for i, platform in enumerate(platforms):
+        x, y = i * (icon + gap), 8
+        if platform == "youtube":
+            d.rounded_rectangle((x, y, x + icon - 1, y + icon - 1), radius=16, fill=(255, 0, 0, 255))
+            d.rounded_rectangle((x + 14, y + 21, x + 54, y + 47), radius=8, fill=(255, 255, 255, 255))
+            d.polygon([(x + 30, y + 25), (x + 30, y + 43), (x + 43, y + 34)], fill=(255, 0, 0, 255))
+        elif platform == "twitch":
+            d.rounded_rectangle((x, y, x + icon - 1, y + icon - 1), radius=16, fill=(145, 70, 255, 255))
+            d.polygon([(x + 14, y + 14), (x + 55, y + 14), (x + 55, y + 46), (x + 43, y + 58),
+                       (x + 34, y + 58), (x + 26, y + 66), (x + 26, y + 58), (x + 14, y + 58)], fill="white")
+            d.rectangle((x + 27, y + 23, x + 32, y + 39), fill=(92, 32, 176, 255))
+            d.rectangle((x + 39, y + 23, x + 44, y + 39), fill=(92, 32, 176, 255))
+        else:
+            d.rounded_rectangle((x, y, x + icon - 1, y + icon - 1), radius=16, fill=(0, 0, 0, 255))
+            wordmark = kick_logo.copy()
+            wordmark.thumbnail((60, 38), Image.Resampling.LANCZOS)
+            im.paste(wordmark, (x + (icon - wordmark.width) // 2, y + (icon - wordmark.height) // 2))
+    bounds = d.textbbox((0, 0), name, font=font, stroke_width=5)
+    text_h = bounds[3] - bounds[1]
+    text_y = (height - text_h) // 2 - bounds[1]
+    d.text((name_x, text_y), name, font=font, fill=(255, 255, 255, 255),
+           stroke_width=5, stroke_fill=(10, 10, 10, 255))
+    im.save(path)
+    return width, height
+
+
 _qsv_ok = None
-RENDER_SECONDS = 600      # one clip's video encode; far beyond normal, so a frozen encoder is stopped, not waited on
+QSV_RENDER_SECONDS = 90   # give hardware encoding a short try; switch to software if it stalls
+RENDER_SECONDS = 300      # custom vertical layouts use the fast software encoder, with a firm upper limit
 
 
 def render_clip(src: Path, out_dir: Path, name: str, clip: dict, words: list, src_w: int, src_h: int) -> dict:
@@ -246,6 +335,10 @@ def render_clip(src: Path, out_dir: Path, name: str, clip: dict, words: list, sr
     out_dir.mkdir(parents=True, exist_ok=True)
     start, end = clip["start"], clip["end"]
     layout, fg_h, hook_y, cap_y = geometry(src_w, src_h, clip.get("layout", "blur"))
+    if layout == "split":
+        clip = dict(clip,
+                    face_rect=clean_rect(clip.get("face_rect") or {"x": .02, "y": .02, "w": .32, "h": .32}),
+                    gameplay_rect=clean_rect(clip.get("gameplay_rect") or {"x": .04, "y": .26, "w": .92, "h": .70}))
     ass = build_ass(words if clip.get("captions", True) else [], start, end, clip.get("hook", ""), clip.get("style", "bounce"),
                     clip.get("highlight_words", []), hook_y, cap_y)
     # The clip is made in a short work folder and moved into place afterwards. The caption step of ffmpeg cannot
@@ -254,36 +347,55 @@ def render_clip(src: Path, out_dir: Path, name: str, clip: dict, words: list, sr
     # break the filter syntax).
     work = Path(tempfile.mkdtemp(prefix="pk"))
     try:
-        return _render_in(work, src, out_dir, name, start, end, layout, fg_h, ass)
+        return _render_in(work, src, out_dir, name, start, end, layout, fg_h, ass, clip, src_w, src_h)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
 
-def _render_in(work: Path, src: Path, out_dir: Path, name: str, start, end, layout, fg_h, ass: str) -> dict:
+def _render_in(work: Path, src: Path, out_dir: Path, name: str, start, end, layout, fg_h, ass: str,
+               clip: dict, src_w: int, src_h: int) -> dict:
     global _qsv_ok
     (work / f"{name}.ass").write_text(ass, encoding="utf-8")
     (work / "f").mkdir()
     for f in config.FONTS_DIR.glob("*.ttf"):
         shutil.copyfile(f, work / "f" / f.name)
-    fc = _filter(layout, fg_h) + f"[v0]ass={name}.ass:fontsdir=f[v]"
-    base = ["ffmpeg", "-y", "-v", "error", "-ss", f"{start:.2f}", "-t", f"{end - start:.2f}", "-i", str(src),
+    fc = _filter(layout, fg_h, src_w, src_h, clip) + f"[v0]ass={name}.ass:fontsdir=f[v1]"
+    base = ["ffmpeg", "-y", "-v", "error", "-ss", f"{start:.2f}", "-t", f"{end - start:.2f}", "-i", str(src)]
+    brand = _brand_png(work / "brand.png", clip, clip.get("brand_fallback", ""))
+    if brand:
+        fc += f";[v1][1:v]overlay={('24' if 'left' in clip.get('brand_position', 'top-left') else 'W-w-24')}:{('24' if 'top' in clip.get('brand_position', 'top-left') else 'H-h-24')}:eof_action=repeat[v]"
+        # A single PNG frame is enough: overlay repeats its last secondary frame. Looping the image input
+        # makes some FFmpeg builds keep the filter alive after the source video ends.
+        base += ["-i", "brand.png"]
+    else:
+        fc += ";[v1]null[v]"
+    base += [
             "-filter_complex", fc, "-map", "[v]", "-map", "0:a:0", "-af", "loudnorm=I=-14:TP=-1.5:LRA=11",
             "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-movflags", "+faststart", "-pix_fmt"]
     encoders = []
-    if _qsv_ok is not False:
+    # QSV can stall on Windows when the CPU filter graph includes vertical split crops
+    # and a rendered badge. Use x264 for those clips instead of waiting ten minutes for QSV.
+    custom_graph = bool(brand) or layout == "split"
+    if _qsv_ok is not False and not custom_graph:
         encoders.append(("qsv", ["nv12", "-c:v", "h264_qsv", "-global_quality", "23", "-preset", "fast"]))
-    encoders.append(("x264", ["yuv420p", "-c:v", "libx264", "-crf", "21", "-preset", "veryfast"]))
+    encoders.append(("x264", ["yuv420p", "-c:v", "libx264", "-crf", "21", "-preset", "ultrafast"]))
     err = None
     for label, enc in encoders:
-        p = subprocess.run(base + enc + [f"{name}.mp4"], cwd=work, capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", creationflags=NO_WINDOW, timeout=RENDER_SECONDS)
-        if p.returncode == 0:
+        try:
+            run(base + enc + ["-t", f"{end - start:.2f}", f"{name}.mp4"], cwd=work,
+                timeout=QSV_RENDER_SECONDS if label == "qsv" else RENDER_SECONDS)
+        except ctx.Cancelled:
+            raise
+        except RuntimeError as e:
+            err = str(e)
+            if label == "qsv":
+                _qsv_ok = False
+                continue
+            raise RuntimeError(f"Render failed: {err}") from None
+        else:
             if label == "qsv":
                 _qsv_ok = True
             break
-        err = p.stderr[-1200:]
-        if label == "qsv":
-            _qsv_ok = False
     else:
         raise RuntimeError(f"Render failed: {err}")
     cover_t = min(1.2, (end - start) / 2)

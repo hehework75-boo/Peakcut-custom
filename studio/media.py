@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
-from . import config
+from . import config, ctx
 
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
@@ -78,14 +78,34 @@ def site_allowed(url: str) -> bool:
 
 
 def run(cmd, cwd=None, timeout=3600):
+    ctx.check_cancelled()
     try:
-        p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, encoding="utf-8",
-                           errors="replace", creationflags=NO_WINDOW, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(f"{Path(str(cmd[0])).name} took too long and was stopped.")
+        p = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                             encoding="utf-8", errors="replace", creationflags=NO_WINDOW)
+    except OSError as e:
+        raise RuntimeError(f"Could not start {Path(str(cmd[0])).name}: {e}") from None
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            out, err = p.communicate(timeout=min(0.25, max(0.01, deadline - time.monotonic())))
+            break
+        except subprocess.TimeoutExpired:
+            if ctx.cancelled():
+                p.terminate()
+                try:
+                    p.communicate(timeout=2)
+                except subprocess.TimeoutExpired:
+                    p.kill()
+                    p.communicate()
+                raise ctx.Cancelled("Cancelled by you.") from None
+            if time.monotonic() >= deadline:
+                p.kill()
+                p.communicate()
+                raise RuntimeError(f"{Path(str(cmd[0])).name} took too long and was stopped.") from None
+    ctx.check_cancelled()
     if p.returncode != 0:
-        raise RuntimeError(f"{Path(str(cmd[0])).name} failed: {p.stderr[-1500:]}")
-    return p.stdout
+        raise RuntimeError(f"{Path(str(cmd[0])).name} failed: {err[-1500:]}")
+    return out
 
 
 class _Quiet:
@@ -97,10 +117,13 @@ class _Quiet:
 
 def _ydl(opts):
     import yt_dlp
+    hooks = list(opts.pop("progress_hooks", []))
+    def cancellation_hook(_):
+        ctx.check_cancelled()
     # a channel or playlist link is answered as "a list" straight away, never walked video by video
     return yt_dlp.YoutubeDL({"noplaylist": True, "quiet": True, "no_warnings": True, "logger": _Quiet(),
                              "extract_flat": "in_playlist", "playlistend": 1, "socket_timeout": 20,
-                             "concurrent_fragment_downloads": 4, **opts})
+                             "concurrent_fragment_downloads": 4, **opts, "progress_hooks": [cancellation_hook, *hooks]})
 
 
 def _video_format(height):

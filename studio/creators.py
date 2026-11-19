@@ -17,7 +17,8 @@ _lock = threading.RLock()
 DEFAULTS = {"name": "", "channel": "", "style": "bounce", "layout": "blur", "captions": True, "min_len": 15, "max_len": 60,
             "max_clips": 6, "min_score": 80, "auto_watch": False, "buffer_min": 20, "live_per_hour": 4, "ai_every_min": 3, "ai_only_on_spike": True, "auto_jump_pct": 60,
             "plan": "free", "decide_mode": "both", "must_clip_min": 0, "min_gap_min": 2,
-            "trigger_words": "clip that, clip it",
+            "trigger_words": "clip that, clip it", "clip_instructions": "",
+            "brand_platform": "off", "brand_platforms": [], "brand_name": "", "brand_position": "top-left",
             "autopost": False, "accounts": [], "post_min_score": 75, "post_gap_min": 45, "daily_cap": 6,
             "privacy": "public", "post_footer": "", "rate_per_1k": 0.0, "channels": {}}
 PLATFORMS = ("youtube", "twitch", "kick")
@@ -35,6 +36,11 @@ def _fix(c: dict) -> dict:
     if c.get("channel") and platform_key(c["channel"]) and c["channel"] not in ch.values():
         ch.setdefault(platform_key(c["channel"]), c["channel"])
     c["channels"] = ch
+    platforms = c.get("brand_platforms")
+    if not platforms and c.get("brand_platform") in ("youtube", "twitch", "kick"):
+        platforms = [c["brand_platform"]]  # old single-badge settings
+    c["brand_platforms"] = list(dict.fromkeys(p for p in (platforms or []) if p in ("youtube", "twitch", "kick")))[:3]
+    c["brand_platform"] = c["brand_platforms"][0] if c["brand_platforms"] else "off"
     if not c.get("ai_every_min"):
         c["ai_every_min"] = 3       # "Auto" (0) is gone: jumps in loudness and chat are now always checked
     if c.get("channel") not in ch.values():
@@ -77,6 +83,16 @@ def _clean(data: dict) -> dict:
             v = v if v in ("free", "pro", "max") else "free"
         elif k == "decide_mode":
             v = v if v in ("both", "either") else "both"
+        elif k == "brand_platform":
+            v = v if v in ("off", "youtube", "twitch", "kick") else "off"
+        elif k == "brand_platforms":
+            v = list(dict.fromkeys(str(p) for p in v if p in ("youtube", "twitch", "kick")))[:3] if isinstance(v, list) else []
+        elif k == "brand_position":
+            v = v if v in ("top-left", "top-right", "bottom-left", "bottom-right") else "top-left"
+        elif k == "clip_instructions":
+            v = "".join(ch for ch in str(v) if ch in "\n\t" or ord(ch) >= 32).strip()[:500]
+        elif k == "brand_name":
+            v = "".join(ch for ch in str(v) if ch in "\n\t" or ord(ch) >= 32).strip()[:80]
         elif k == "privacy":
             v = v if v in ("public", "unlisted", "private") else "public"
         else:
@@ -152,6 +168,8 @@ def update(cid, data: dict) -> dict:
     if not c:
         raise KeyError(cid)
     new = _clean(data)
+    if "brand_platforms" in new:
+        new["brand_platform"] = new["brand_platforms"][0] if new["brand_platforms"] else "off"
     if "channels" in new and "channel" not in new and c["channel"] not in new["channels"].values():
         c["channel"] = ""  # the recording channel was removed: fall back to another one
     if "channel" in new and new["channel"] and "channels" not in new:

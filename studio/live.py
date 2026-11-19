@@ -367,7 +367,8 @@ class Session:
         title, up = self.job["title"], self.job["uploader"]
         try:
             cands, tok = brain.judge_transcript(win, ws, now, title, up, st["min_len"], st["max_len"], self.job["clips"],
-                                                n=1 if every <= 2 else 2, must=must)  # Auto (0) asks for one
+                                                n=1 if every <= 2 else 2, must=must,
+                                                instructions=st.get("clip_instructions", ""))
         except Exception as e:  # noqa: BLE001
             self.job["ai"]["last_error"] = str(e)[-200:]
             return self._verdict(verdict, "AI error: " + str(e)[-80:])
@@ -455,7 +456,12 @@ class Session:
     def _add_clip(self, c):
         self.n += 1
         c.update(id=f"clip{self.n:03d}", style=self.settings["style"], layout=self.settings["layout"],
-                 captions=self.job["options"].get("captions", True), status="queued", version=0, made_at=time.time())
+                 captions=self.job["options"].get("captions", True),
+                 brand_platform=self.settings.get("brand_platform", "off"),
+                 brand_platforms=self.settings.get("brand_platforms", []),
+                 brand_name=self.settings.get("brand_name", ""),
+                 brand_position=self.settings.get("brand_position", "top-left"),
+                 status="queued", version=0, made_at=time.time())
         with self.lock:
             self.job["clips"].append(c)
         jobs.save(self.job)

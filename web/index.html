@@ -218,6 +218,7 @@ img.avatar.ring{background:transparent}
 input:not([type=checkbox],[type=radio],[type=range]):focus-visible,select:focus-visible,textarea:focus-visible{outline:none}
 input::placeholder,textarea::placeholder{color:var(--faint)}
 label.f{display:flex;flex-direction:column;gap:7px;font-size:12px;color:var(--dim);font-weight:600}
+.field-group{display:flex;flex-direction:column;gap:7px;font-size:12px;color:var(--dim);font-weight:600}
 label.sw{display:flex;align-items:center;gap:12px;cursor:pointer;color:var(--text);font-weight:600}
 label.sw input{appearance:none;width:38px;height:22px;border-radius:999px;background:#DCD2D0;position:relative;cursor:pointer;flex:none;margin:0}
 label.sw input::after{content:"";position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:#fff;transition:transform .15s}
@@ -602,6 +603,11 @@ dialog::backdrop{background:rgba(14,12,11,.42);animation:fadein .16s ease}
 .editor .stage{background:#17110E;display:grid;place-items:center;position:relative;min-height:320px}
 .editor video,.editor .stage img{width:100%;max-height:calc(100vh - 48px);aspect-ratio:9/16;object-fit:contain;display:block}
 .editor .panel{padding:22px;overflow:auto;display:flex;flex-direction:column;gap:14px}
+.crop-frame{position:relative;max-height:260px;overflow:hidden;background:#17110E;border-radius:10px;touch-action:none}
+.crop-frame img{display:block;width:100%;height:100%;object-fit:fill}
+.crop-frame svg{position:absolute;inset:0;width:100%;height:100%;touch-action:none}
+.crop-frame rect{fill:rgba(255,255,255,.08);stroke-width:5;vector-effect:non-scaling-stroke}
+.crop-frame rect.face{stroke:#f04aa8}.crop-frame rect.game{stroke:#43d6df}
 .editor h3{font-size:13px;font-weight:600;color:var(--dim);margin-top:6px}
 .two{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 #toasts{position:fixed;right:20px;bottom:20px;display:flex;flex-direction:column;gap:8px;z-index:50}
@@ -1368,6 +1374,7 @@ function drawAdd(variant) {
       ${c ? "" : picker("o_creator", "File under creator", [{v:"", label:"No creator", icon:"user"}, ...S.creators.map(x => ({v:x.id, label:x.name, img:x.profile?.pic && x.profile.channel === x.channel ? avatarUrl(x) : ""}))], "")}
       <button type="button" class="chip" data-act="toggleopts" aria-expanded="false">${ic("sliders")}Options</button>
       <span class="grow"></span><span class="hint">or drop a video file here</span>
+      <button type="button" class="btn" id="cancelLookup" data-act="cancel-lookup" style="display:none">Cancel</button>
       <button class="btn primary" id="goBtn">${ic("scissors")}Make clips</button>
     </div>
     <div class="composer-opts" inert><div class="og">
@@ -1386,9 +1393,9 @@ function drawAdd(variant) {
       <div class="ob"><div class="ot">Part of the video</div><div class="range">
         <label>From<input id="o_from" type="number" min="0" placeholder="start" aria-label="From minute">min</label>${ic("arrowr")}
         <label>To<input id="o_to" type="number" min="0" placeholder="end" aria-label="Up to minute">min</label></div></div>
-      <div class="ob wide"><label class="ot" for="o_instructions">What moments should AI find?</label>
-        <textarea id="o_instructions" rows="3" maxlength="500" placeholder="For example: funny, angry, happy or excited moments, or a specific action"></textarea>
-        <div class="ot" style="margin:8px 0 0;font-weight:400">Optional. Leave blank to use PeakCut's usual clip picks.</div></div>
+      <div class="ob wide"><label class="ot" for="o_instructions">Tell AI what moments you want</label>
+        <textarea id="o_instructions" rows="3" maxlength="500" placeholder="For example: funny reactions, excited moments, clutch wins, or calm explanations"></textarea>
+        <div class="ot" style="margin:8px 0 0;font-weight:400">Optional. AI uses this as a preference when choosing clips.</div></div>
     </div></div></form>`;
   drawAtt();
 }
@@ -1524,6 +1531,8 @@ function drawAtt() {
   if (b) { b.disabled = A.busy;
     const k = A.files.length + A.links.filter(l => l.state === "ok").length;
     b.innerHTML = A.busy ? `${ic("up")}Sending…` : A.queued ? `${ic("clock")}Finding video…` : `${ic("scissors")}Make clips${k > 1 ? ` (${k})` : ""}`; }
+  const cancelLookup = $("#cancelLookup");
+  if (cancelLookup) cancelLookup.style.display = A.queued && !A.busy ? "" : "none";
 }
 
 async function lookUp(u) {
@@ -1739,11 +1748,12 @@ function jobHtml(j) {
                 j.took ? "made in " + fmt(j.took) : "", j.kind === "live" ? "recording, " + j.stage.toLowerCase() : ""].filter(Boolean).map(esc).join(" · ");
   const pic = j.thumb ? `<img src="/media/${esc(j.id)}/thumb.jpg" alt="" loading="lazy">` : ic(j.source?.type === "file" ? "film" : "link");
   return `<div class="job-head"><div class="jt"><span class="jthumb">${pic}${j.duration ? `<span class="du">${fmt(j.duration)}</span>` : ""}</span><div style="min-width:0"><h3>${esc(j.title || j.source.name)}</h3><p class="sub">${meta}</p></div></div>
-      <div class="row" style="flex-wrap:nowrap;gap:4px">${busy ? "" : `
+      <div class="row" style="flex-wrap:nowrap;gap:4px">${busy ? `<button class="btn sm danger" data-act="canceljob" data-j="${j.id}" ${j.cancel_requested ? "disabled" : ""}>${j.cancel_requested ? "Cancelling…" : "Cancel"}</button>` : `
         ${j.clips.some(c => c.status === "done") ? `<button class="btn sm icon ghost" data-act="dlall" data-j="${j.id}" title="Download all clips of this video" aria-label="Download all clips of this video">${ic("down")}</button>` : ""}
         <button class="btn sm icon ghost" data-act="deljob" data-j="${j.id}" title="Delete" aria-label="Delete this video and its clips">${ic("trash")}</button>
         <label class="selck" title="Select this video and its clips"><input type="checkbox" data-sel="j:${j.id}" ${sel().has("j:" + j.id) ? "checked" : ""} aria-label="Select this video"></label>`}</div></div>
     ${busy ? `<div class="bar"><i style="width:${Math.round(j.progress * 100)}%"></i></div><p class="sub">${esc(j.stage)} · ${Math.round(j.progress * 100)}%</p>` : ""}
+    ${j.status === "cancelled" ? `<p class="sub">Cancelled. Any clips already finished are still here.</p>` : ""}
     ${j.status === "done" && !j.clips.length ? `<p class="sub">${esc(j.stage)}</p>` : ""}
     ${j.error ? `<div class="err">${esc(j.error)}<button class="rep" data-act="report" data-ctx="${esc("Video failed: " + (j.title || j.source.name || "") + " | " + j.error)}">Report this</button></div>` : ""}${j.ai?.note ? `<p class="sub">${esc(j.ai.note)}</p>` : ""}
     ${j.clips.length ? `<div class="grid">${j.clips.map(c => clipHtml(j, c)).join("")}</div>` : ""}`;
@@ -1845,6 +1855,7 @@ async function saveChannels(chs, main) {
 function drawCreatorForm() {
   const c = creator(), box = $("#cform"); if (!c || !box) return;
   const A = S.accounts;
+  const creatorBadges = c.brand_platforms || (c.brand_platform && c.brand_platform !== "off" ? [c.brand_platform] : []);
   box.innerHTML = `<div class="card"><h2>Their stream</h2><p class="help">Where to record from, and whether to start by itself.</p>
       <div class="chans">${channelRows(c)}</div>
       <div class="fields" style="margin-top:14px"><label class="sw span"><input type="checkbox" data-k="auto_watch" ${c.auto_watch ? "checked" : ""}><span>Record automatically when they go live<small>Checks straight away, then every two minutes.</small></span></label></div></div>
@@ -1857,12 +1868,16 @@ function drawCreatorForm() {
         <label class="f">Words judge must score at least<input data-k="min_score" type="number" min="0" max="100" value="${c.min_score}"></label>
         <label class="f">Make sure there's a live clip at least every<select data-k="must_clip_min">${opts({0:"Off", 15:"15 minutes", 30:"30 minutes", 60:"1 hour", 120:"2 hours"}, c.must_clip_min)}</select></label>
         <label class="f">Minimum gap between live clips (minutes)<input data-k="min_gap_min" type="number" min="0" max="60" value="${c.min_gap_min}"></label>
+        <label class="f span">What moments should AI find?<textarea data-k="clip_instructions" rows="3" maxlength="500" placeholder="For example: funny, angry, happy or excited moments, or a specific action">${esc(c.clip_instructions || "")}</textarea><small class="sub" style="font-weight:400">Optional. Used by the words judge for live clips; leave blank for PeakCut's usual picks.</small></label>
         <label class="f span">Always clip the last 30 seconds when someone says<input data-k="trigger_words" value="${esc(c.trigger_words)}" placeholder="clip that, clip it"><small class="sub" style="font-weight:400">Separate phrases with commas. Matched on the transcript, so it needs no AI call.</small></label>
       </div></div>
     <div class="card"><h2>Clips</h2><p class="help">How this creator's clips look.</p>
       <div class="fields"><label class="sw span"><input type="checkbox" data-k="captions" data-caption-toggle ${c.captions === false ? "" : "checked"}>Generate captions</label>
         <label class="f">Caption style<select data-k="style" data-caption-style ${c.captions === false ? "disabled" : ""}>${opts(S.status.styles, c.style)}</select></label>
         <label class="f">Layout<select data-k="layout">${opts(S.status.layouts, c.layout)}</select></label>
+        <div class="field-group span"><span>Default platform badges</span><div class="row" style="gap:6px">${[["youtube","YouTube"],["twitch","Twitch"],["kick","Kick"]].map(([k,n]) => `<label class="ck"><input type="checkbox" data-setup-platform value="${k}" ${creatorBadges.includes(k) ? "checked" : ""}>${n}</label>`).join("")}</div><small class="sub" style="font-weight:400">Choose any combination. Leave all off for campaigns that ban logos.</small></div>
+        <label class="f">Badge name<input data-k="brand_name" maxlength="80" value="${esc(c.brand_name || "")}" placeholder="Defaults to the streamer's name"></label>
+        <label class="f">Badge position<select data-k="brand_position">${opts({"top-left":"Top left", "top-right":"Top right", "bottom-left":"Bottom left", "bottom-right":"Bottom right"}, c.brand_position || "top-left")}</select></label>
         <label class="f">Shortest clip (seconds)<input data-k="min_len" type="number" value="${c.min_len}"></label>
         <label class="f">Longest clip (seconds)<input data-k="max_len" type="number" value="${c.max_len}"></label>
         <label class="f">Clips per video<input data-k="max_clips" type="number" value="${c.max_clips}"></label>
@@ -1880,7 +1895,7 @@ function drawCreatorForm() {
       <button class="btn danger" data-act="delcreator">${ic("trash")}Delete creator</button></div>
     <div class="savebar" id="savebar"><span>${ic("warn")}You have unsaved changes</span><button class="btn ghost" data-act="cdiscard">Discard</button><button class="btn primary" data-act="csave">${ic("check")}Save changes</button></div>`;
 }
-const creatorForm = () => { const d = {}; $$("#cform [data-k]").forEach(i => { if (i.type === "radio") { if (i.checked) d[i.dataset.k] = i.value; } else d[i.dataset.k] = i.type === "checkbox" ? i.checked : i.value; }); d.accounts = $$("#cform [data-acc]:checked").map(i => i.value); return d; };
+const creatorForm = () => { const d = {}; $$("#cform [data-k]").forEach(i => { if (i.type === "radio") { if (i.checked) d[i.dataset.k] = i.value; } else d[i.dataset.k] = i.type === "checkbox" ? i.checked : i.value; }); d.brand_platforms = $$("#cform [data-setup-platform]:checked").map(i => i.value); d.accounts = $$("#cform [data-acc]:checked").map(i => i.value); return d; };
 const dirty = on => $("#savebar")?.classList.toggle("on", on);
 async function saveCreator(quiet) {
   try { await send(`/api/creators/${creatorId()}`, creatorForm(), "PUT"); dirty(false); if (!quiet) toast("Saved", "ok"); await tick(); return true; }
@@ -2130,7 +2145,22 @@ async function drawSettings() {
 async function saveSettings() { const d = {}; $$("#sform [data-s]").forEach(i => d[i.dataset.s] = i.value); await send("/api/settings", d, "PUT"); }
 
 /* ============================================================ clip editor */
-function openClip(jid, cid) { D.jid = jid; D.cid = cid; D.sig = ""; drawClipDlg(true); $("#clipdlg").showModal(); }
+function openClip(jid, cid) {
+  D.jid = jid; D.cid = cid; D.sig = ""; D.cropTarget = "face"; D.drag = null;
+  const c = jobOf(jid)?.clips.find(x => x.id === cid);
+  D.faceRect = {...(c?.face_rect || {x:.02,y:.02,w:.32,h:.32})};
+  D.gameRect = {...(c?.gameplay_rect || {x:.04,y:.26,w:.92,h:.70})};
+  drawClipDlg(true); $("#clipdlg").showModal();
+}
+function cropRectMarkup(r, cls, w, h) {
+  const x = r.x * w, y = r.y * h, rw = r.w * w, rh = r.h * h;
+  return `<rect class="${cls}" x="${x}" y="${y}" width="${rw}" height="${rh}" rx="8"/>`;
+}
+function drawCropRects() {
+  const svg = $("#crop-svg"); if (!svg) return;
+  const j = jobOf(D.jid), w = j?.width || 1280, h = j?.height || 720;
+  svg.innerHTML = cropRectMarkup(D.faceRect, "face", w, h) + cropRectMarkup(D.gameRect, "game", w, h);
+}
 function drawClipDlg(full) {
   const j = jobOf(D.jid), c = j?.clips.find(x => x.id === D.cid), dlg = $("#clipdlg");
   if (!c) { if (dlg.open) dlg.close(); return; }
@@ -2139,6 +2169,10 @@ function drawClipDlg(full) {
     : c.status === "error" ? `<div class="err" style="padding:20px;text-align:center">${esc(c.error || "Could not make this clip.")}</div>`
     : `<span class="making">${c.status === "rendering" ? "Making this clip…" : "Waiting its turn…"}</span>`;
   if (full) {
+    const fw = j.width || 1280, fh = j.height || 720;
+    const clipBadges = c.brand_platforms || (c.brand_platform && c.brand_platform !== "off" ? [c.brand_platform] : []);
+    const frameAt = c.src_offset != null ? Math.max(0, c.start - c.src_offset) : c.start;
+    const frameUrl = `/api/jobs/${encodeURIComponent(j.id)}/clips/${encodeURIComponent(c.id)}/frame?at=${frameAt.toFixed(2)}`;
     dlg.innerHTML = `<div class="editor"><div class="stage" id="stage">${stage}</div>
       <div class="panel">
         <div class="job-head" style="margin:0"><div><span class="badge ${scoreCls(c.score)}" style="position:static">${c.judges ? "Words " + c.judges.words + (c.judges.reaction ? " · Reaction " + c.judges.reaction : "") : c.score ? "Score " + c.score : "Clipped by hand"}</span>
@@ -2148,6 +2182,13 @@ function drawClipDlg(full) {
         <label class="sw"><input type="checkbox" data-f="captions" data-caption-toggle ${c.captions === false ? "" : "checked"}>Generate captions</label>
         <div class="two"><label class="f">Caption style<select data-f="style" data-caption-style ${c.captions === false ? "disabled" : ""}>${opts(S.status.styles, c.style)}</select></label>
           <label class="f">Layout<select data-f="layout">${opts(S.status.layouts, c.layout)}</select></label></div>
+        <h3>Facecam + gameplay areas</h3>
+        <p class="help">Choose “Facecam + gameplay” in Layout, then drag on the source frame to mark each area. The top box becomes the upper panel; gameplay fills the lower panel.</p>
+        <div class="row" style="gap:6px"><button type="button" class="btn sm ${D.cropTarget === "face" ? "primary" : ""}" data-act="croptarget" data-area="face">Choose facecam</button><button type="button" class="btn sm ${D.cropTarget === "game" ? "primary" : ""}" data-act="croptarget" data-area="game">Choose gameplay</button></div>
+        <div class="crop-frame" style="aspect-ratio:${fw}/${fh};width:min(100%,${Math.round(260*fw/fh)}px);margin:auto"><img id="source-frame" src="${frameUrl}" alt="Source video frame for selecting crop areas"><svg id="crop-svg" viewBox="0 0 ${fw} ${fh}" preserveAspectRatio="none" aria-label="Drag to select source areas"></svg></div>
+        <div class="field-group"><span>Platform badges</span><div class="row" style="gap:6px">${[["youtube","YouTube"],["twitch","Twitch"],["kick","Kick"]].map(([k,n]) => `<label class="ck"><input type="checkbox" data-clip-platform value="${k}" ${clipBadges.includes(k) ? "checked" : ""}>${n}</label>`).join("")}</div><small class="sub" style="font-weight:400">Choose any combination. The selected logos and creator name appear together.</small></div>
+        <label class="f">Creator/channel name<input data-f="brand_name" maxlength="80" value="${esc(c.brand_name || "")}" placeholder="Uses the streamer's name if blank"></label>
+        <label class="f">Badge position<select data-f="brand_position">${opts({"top-left":"Top left", "top-right":"Top right", "bottom-left":"Bottom left", "bottom-right":"Bottom right"}, c.brand_position || "top-left")}</select><small class="sub" style="font-weight:400">Platform badge is off unless selected. Campaigns that ban logos require it off.</small></label>
         <div class="two"><label class="f">Start (seconds)<input data-f="start" type="number" step="0.5" value="${c.start}"></label>
           <label class="f">End (seconds)<input data-f="end" type="number" step="0.5" value="${c.end}"></label></div>
         <h3>Post text</h3>
@@ -2166,7 +2207,25 @@ function drawClipDlg(full) {
   } else if (D.sig !== sig) $("#stage").innerHTML = stage;
   D.sig = sig;
   put($("#dposts"), postPills(c));
+  if (full) drawCropRects();
 }
+$("#clipdlg").addEventListener("pointerdown", e => {
+  const svg = e.target.closest("#crop-svg"); if (!svg) return;
+  const box = svg.getBoundingClientRect(), j = jobOf(D.jid), w = j?.width || 1280, h = j?.height || 720;
+  const point = ev => ({x:Math.max(0,Math.min(1,(ev.clientX-box.left)/box.width)),y:Math.max(0,Math.min(1,(ev.clientY-box.top)/box.height))});
+  const p = point(e); D.drag = {target:D.cropTarget, start:p};
+  const rect = {x:p.x,y:p.y,w:.01,h:.01}; if (D.cropTarget === "face") D.faceRect = rect; else D.gameRect = rect;
+  svg.setPointerCapture(e.pointerId); drawCropRects(); e.preventDefault();
+});
+$("#clipdlg").addEventListener("pointermove", e => {
+  if (!D.drag) return;
+  const svg = $("#crop-svg"); if (!svg) return;
+  const box = svg.getBoundingClientRect(), p = {x:Math.max(0,Math.min(1,(e.clientX-box.left)/box.width)),y:Math.max(0,Math.min(1,(e.clientY-box.top)/box.height))};
+  const r = {x:Math.min(D.drag.start.x,p.x),y:Math.min(D.drag.start.y,p.y),w:Math.abs(p.x-D.drag.start.x),h:Math.abs(p.y-D.drag.start.y)};
+  if (D.drag.target === "face") D.faceRect = r; else D.gameRect = r;
+  drawCropRects(); e.preventDefault();
+});
+$("#clipdlg").addEventListener("pointerup", () => { D.drag = null; });
 $("#clipdlg").addEventListener("close", () => { $("#clipdlg").innerHTML = ""; D.jid = null; });
 $("#clipdlg").addEventListener("click", e => { if (e.target === e.currentTarget) e.currentTarget.close(); });
 
@@ -2263,6 +2322,11 @@ document.addEventListener("click", async e => {
   const a = b.dataset.act, d = b.dataset;
   if (b.tagName === "A") e.preventDefault();
   try {
+    if (a === "croptarget") {
+      D.cropTarget = d.area === "game" ? "game" : "face";
+      $$("#clipdlg [data-area]").forEach(x => x.classList.toggle("primary", x.dataset.area === D.cropTarget));
+      return;
+    }
     if (a === "go") { closePops(); return go(d.v, d.tab); }
     if (a === "aimodels") {
       b.disabled = true;
@@ -2379,6 +2443,14 @@ document.addEventListener("click", async e => {
       if (!await ask("Delete this video?", "The video and all of its clips are permanently deleted. This cannot be undone.", "Delete", true)) return;
       await api(`/api/jobs/${d.j}`, {method:"DELETE"}); toast("Deleted"); return tick();
     }
+    if (a === "canceljob") {
+      await api(`/api/jobs/${d.j}/cancel`, {method:"POST"});
+      toast("Stopping video processing…", "ok"); return tick();
+    }
+    if (a === "cancel-lookup") {
+      const A = att(); clearTimeout(linkTimer); A.queued = false; A.links = A.links.filter(l => l.state !== "wait"); drawAtt();
+      return toast("Video lookup cancelled.", "ok");
+    }
     if (a === "chadd") {
       const k = d.p, v = $("#chan_" + k)?.value.trim();
       if (!v) { $("#chan_" + k)?.focus(); return toast(`Paste their ${PLAT[k].name} channel link.`, "bad"); }
@@ -2464,6 +2536,8 @@ document.addEventListener("click", async e => {
       const body = {}; $$("#clipdlg [data-f]").forEach(i => {
         body[i.dataset.f] = i.type === "checkbox" ? i.checked : i.type === "number" ? Number(i.value) : i.value;
       });
+      body.face_rect = D.faceRect; body.gameplay_rect = D.gameRect;
+      body.brand_platforms = $$("#clipdlg [data-clip-platform]:checked").map(i => i.value);
       await send(`/api/jobs/${D.jid}/clips/${D.cid}/render`, body); toast("Re-making the clip…", "ok"); return tick();
     }
     if (a === "postnow" || a === "postqueue") {

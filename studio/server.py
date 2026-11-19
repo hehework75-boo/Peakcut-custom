@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -943,6 +944,15 @@ def rerender(jid: str, cid: str, body: dict = Body(...)):
     return jobs.public(job)
 
 
+@app.post("/api/jobs/{jid}/cancel")
+def cancel_job(jid: str):
+    _job_or_404(jid)
+    try:
+        return jobs.cancel(jid)
+    except ValueError as e:
+        raise HTTPException(409, str(e)) from None
+
+
 @app.delete("/api/jobs/{jid}")
 def delete_job(jid: str):
     job = _job_or_404(jid)
@@ -1030,6 +1040,30 @@ def media_file(jid: str, name: str, download: int = 0):
     if not f.is_file():
         raise HTTPException(404)
     return FileResponse(f, filename=name if download else None, headers={"Cache-Control": "private, max-age=300"})
+
+
+@app.get("/api/jobs/{jid}/clips/{cid}/frame")
+def clip_source_frame(jid: str, cid: str, at: float = 0):
+    """A small authenticated source frame for selecting facecam/gameplay crop boxes in the clip editor."""
+    job = _job_or_404(jid)
+    clip = next((c for c in job.get("clips", []) if c.get("id") == cid), None)
+    if not clip:
+        raise HTTPException(404, "No such clip")
+    src = Path(clip["src"]) if clip.get("src") else Path(job.get("source_path") or "")
+    if not src.is_file():
+        raise HTTPException(404, "The source video is no longer available for area selection.")
+    if not isinstance(at, (int, float)) or not 0 <= at <= 604800:
+        raise HTTPException(400, "That frame time is not valid.")
+    try:
+        p = subprocess.run(["ffmpeg", "-y", "-v", "error", "-ss", f"{float(at):.2f}", "-i", str(src),
+                            "-frames:v", "1", "-vf", "scale=960:-2", "-an", "-f", "image2pipe",
+                            "-vcodec", "mjpeg", "-q:v", "4", "pipe:1"],
+                           capture_output=True, timeout=20, creationflags=media.NO_WINDOW)
+    except (OSError, subprocess.TimeoutExpired):
+        raise HTTPException(422, "Could not read a frame from this clip's source.") from None
+    if p.returncode or not p.stdout:
+        raise HTTPException(422, "Could not read a frame from this clip's source.")
+    return Response(p.stdout, media_type="image/jpeg", headers={"Cache-Control": "private, no-store"})
 
 
 # ================================================================ creators and live recording

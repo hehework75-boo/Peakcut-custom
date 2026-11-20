@@ -1,6 +1,7 @@
 """Creator workspaces. Each user has their own: users/<user>/creators/<id>/{videos,live,creator.json,log.jsonl}."""
 import copy
 import json
+import math
 import re
 import threading
 import time
@@ -17,7 +18,8 @@ _lock = threading.RLock()
 DEFAULTS = {"name": "", "channel": "", "style": "bounce", "layout": "blur", "captions": True, "min_len": 15, "max_len": 60,
             "max_clips": 6, "min_score": 80, "auto_watch": False, "buffer_min": 20, "live_per_hour": 4, "ai_every_min": 3, "ai_only_on_spike": True, "auto_jump_pct": 60,
             "plan": "free", "decide_mode": "both", "must_clip_min": 0, "min_gap_min": 2,
-            "trigger_words": "clip that, clip it", "clip_instructions": "",
+            "trigger_words": "clip that, clip it", "clip_instructions": "", "visual_review": True,
+            "face_rect": None, "gameplay_rect": None, "facecam_ratio": 34, "hook_x": None, "hook_y": None,
             "brand_platform": "off", "brand_platforms": [], "brand_name": "", "brand_position": "top-left",
             "autopost": False, "accounts": [], "post_min_score": 75, "post_gap_min": 45, "daily_cap": 6,
             "privacy": "public", "post_footer": "", "rate_per_1k": 0.0, "channels": {}}
@@ -32,6 +34,10 @@ def platform_key(url: str) -> str:
 
 def _fix(c: dict) -> dict:
     """One channel per platform in `channels`; `channel` is the one to record from and is always one of them."""
+    c.pop("gameplay_zoom", None)
+    c.pop("gameplay_framing", None)
+    if c.get("layout") in ("face_left", "game_left"):
+        c["layout"] = "split"
     ch = {k: v for k, v in (c.get("channels") or {}).items() if k in PLATFORMS and v}
     if c.get("channel") and platform_key(c["channel"]) and c["channel"] not in ch.values():
         ch.setdefault(platform_key(c["channel"]), c["channel"])
@@ -47,7 +53,7 @@ def _fix(c: dict) -> dict:
         c["channel"] = next((ch[k] for k in PLATFORMS if k in ch), "")
     return c
 NUMERIC = {"min_len": (5, 120), "max_len": (10, 180), "max_clips": (1, 20), "min_score": (0, 100), "buffer_min": (5, 120), "live_per_hour": (1, 60), "ai_every_min": (1, 30), "auto_jump_pct": (20, 300), "must_clip_min": (0, 240), "min_gap_min": (0, 60),
-           "post_min_score": (0, 100), "post_gap_min": (5, 1440), "daily_cap": (1, 50)}
+           "post_min_score": (0, 100), "post_gap_min": (5, 1440), "daily_cap": (1, 50), "facecam_ratio": (20, 80)}
 
 
 def root(cid) -> Path:
@@ -65,13 +71,36 @@ def _clean(data: dict) -> dict:
                     raise ValueError("Captions must be on or off.")
                 out[k] = data[k]
             continue
+        if k in ("face_rect", "gameplay_rect"):
+            if k in data:
+                from .render import clean_rect
+                v = data[k]
+                if isinstance(v, str):
+                    try:
+                        v = json.loads(v)
+                    except ValueError:
+                        raise ValueError("That selected area is not valid.") from None
+                out[k] = clean_rect(v)
+            continue
+        if k in ("hook_x", "hook_y"):
+            if k in data and data[k] is not None:
+                try:
+                    v = float(data[k])
+                except (TypeError, ValueError):
+                    raise ValueError("Title position must be between 5 and 95 percent.") from None
+                if not math.isfinite(v):
+                    raise ValueError("Title position must be between 5 and 95 percent.")
+                if v > 1:
+                    v /= 100
+                out[k] = max(0.05, min(0.95, v))
+            continue
         if k not in data or data[k] is None:
             continue
         v = data[k]
         if k in NUMERIC:
             lo, hi = NUMERIC[k]
             v = max(lo, min(hi, int(float(v))))
-        elif k in ("auto_watch", "autopost", "ai_only_on_spike"):
+        elif k in ("auto_watch", "autopost", "ai_only_on_spike", "visual_review"):
             v = bool(v)
         elif k == "channels":
             v = {p: str(u).strip()[:300] for p, u in (v.items() if isinstance(v, dict) else []) if p in PLATFORMS and str(u).strip()}
@@ -81,6 +110,9 @@ def _clean(data: dict) -> dict:
             v = max(0.0, min(1000.0, float(v or 0)))
         elif k == "plan":
             v = v if v in ("free", "pro", "max") else "free"
+        elif k == "layout":
+            from . import render
+            v = "split" if v in ("face_left", "game_left") else v if v in render.LAYOUTS else DEFAULTS["layout"]
         elif k == "decide_mode":
             v = v if v in ("both", "either") else "both"
         elif k == "brand_platform":

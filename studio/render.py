@@ -18,6 +18,20 @@ STYLES = {
              "strong": "00D7FF", "outline": 7, "pop": 114, "upper": True, "per": 2},
     "clean": {"label": "Clean", "font": "Poppins ExtraBold", "size": 100, "base": "FFFFFF", "active": "6BD7FF",
               "strong": "FFFFFF", "outline": 5, "pop": 106, "upper": False, "per": 4},
+    "karaoke": {"label": "Karaoke", "font": "Poppins ExtraBold", "size": 112, "base": "FFFFFF", "active": "86FF52",
+                "strong": "B3FF5B", "outline": 5, "pop": 104, "upper": False, "per": 1},
+    "neon": {"label": "Neon", "font": "Anton", "size": 142, "base": "FFFFFF", "active": "EA4EFF",
+             "strong": "FFE841", "outline": 9, "pop": 112, "upper": True, "per": 2},
+    "gaming": {"label": "Gaming", "font": "Archivo Black", "size": 130, "base": "FFFFFF", "active": "3AFF7C",
+               "strong": "00FFFF", "outline": 8, "pop": 110, "upper": True, "per": 2},
+    "sunset": {"label": "Sunset", "font": "Anton", "size": 136, "base": "FFFFFF", "active": "358AFF",
+               "strong": "6AD2FF", "outline": 7, "pop": 110, "upper": True, "per": 3},
+    "minimal": {"label": "Minimal", "font": "Poppins ExtraBold", "size": 88, "base": "FFFFFF", "active": "FFD661",
+                "strong": "FFD661", "outline": 4, "pop": 104, "upper": False, "per": 5},
+    "pastel": {"label": "Pastel", "font": "Poppins ExtraBold", "size": 108, "base": "FFFFFF", "active": "FF8BC9",
+               "strong": "F5DAFF", "outline": 5, "pop": 106, "upper": False, "per": 3},
+    "impact": {"label": "Impact", "font": "Anton", "size": 164, "base": "FFFFFF", "active": "2D65FF",
+               "strong": "00FFFF", "outline": 10, "pop": 116, "upper": True, "per": 2},
 }
 HOOK = {"font": "Poppins ExtraBold", "size": 96, "ink": "14100E", "box": "FFFFFF", "pad_x": 36, "pad_y": 22, "radius": 26,
         "max_w": 900}
@@ -79,7 +93,8 @@ def install_fonts():
 
 
 LAYOUTS = {"blur": "Full frame + blurred fill", "zoom": "Zoomed in + blurred fill", "crop": "Fill the screen (centre crop)",
-           "split": "Facecam + gameplay (choose areas)"}
+           "split": "Facecam top · gameplay bottom", "split_reverse": "Gameplay top · facecam bottom"}
+SPLIT_LAYOUTS = {"split", "split_reverse"}
 
 
 def clean_rect(value):
@@ -126,12 +141,14 @@ def _groups(words, per):
     return out
 
 
-def geometry(src_w, src_h, layout):
+def geometry(src_w, src_h, layout, facecam_ratio=34):
     """Where the video sits in the 1080x1920 frame, and where hook and captions go."""
-    if src_h >= src_w and layout not in ("crop", "split"):
+    if src_h >= src_w and layout not in ({"crop"} | SPLIT_LAYOUTS):
         layout = "crop"  # already vertical or square: nothing to gain from a blurred fill
-    if layout == "split":
-        return layout, H, 640, 1500
+    ratio = max(20, min(80, int(facecam_ratio or 34))) / 100
+    if layout in SPLIT_LAYOUTS:
+        title_y = round(H * (ratio if layout == "split" else 1 - ratio))
+        return layout, H, W // 2, title_y, 1500
     if layout == "blur":
         fg_h = min(H, int(round(W * src_h / src_w / 2)) * 2)
     elif layout == "zoom":
@@ -140,11 +157,11 @@ def geometry(src_w, src_h, layout):
         fg_h = H
     top = (H - fg_h) // 2
     if layout == "crop":
-        return layout, fg_h, 300, 1380
-    return layout, fg_h, max(230, top - 190), min(1640, top + fg_h + 180)
+        return layout, fg_h, W // 2, 300, 1380
+    return layout, fg_h, W // 2, max(230, top - 190), min(1640, top + fg_h + 180)
 
 
-def _hook_events(hook, dur, y):
+def _hook_events(hook, dur, x, y):
     """The heading: dark text in a white rounded box that fits it, on one line or two balanced ones."""
     f, size = _Font.get(HOOK["font"]), HOOK["size"]
     words = hook.split()
@@ -160,7 +177,9 @@ def _hook_events(hook, dur, y):
         widest = max(f.width(l, size) for l in lines)
     line_h = f.em(size) * 1.16
     bw, bh = widest + 2 * HOOK["pad_x"], line_h * len(lines) + 2 * HOOK["pad_y"]
-    x0, y0, r = (W - bw) / 2, y - bh / 2, min(HOOK["radius"], bh / 2)
+    cx = max(bw / 2 + 20, min(W - bw / 2 - 20, x))
+    cy = max(bh / 2 + 20, min(H - bh / 2 - 20, y))
+    x0, y0, r = cx - bw / 2, cy - bh / 2, min(HOOK["radius"], bh / 2)
     x1, y1 = x0 + bw, y0 + bh
     n = lambda v: f"{v:.0f}"                                                         # noqa: E731
     box = (f"m {n(x0 + r)} {n(y0)} l {n(x1 - r)} {n(y0)} b {n(x1)} {n(y0)} {n(x1)} {n(y0)} {n(x1)} {n(y0 + r)} "
@@ -170,12 +189,12 @@ def _hook_events(hook, dur, y):
     span = f"{_ts(0)},{_ts(dur)}"
     ev = [f"Dialogue: 3,{span},Hook,,0,0,0,,{{\\an7\\pos(0,0)\\fad(160,0)\\c&H{HOOK['box']}&\\p1}}{box}{{\\p0}}"]
     for i, line in enumerate(lines):
-        cy = y - line_h * (len(lines) - 1) / 2 + i * line_h - f.cap_shift(size)
-        ev.append(f"Dialogue: 4,{span},Hook,,0,0,0,,{{\\an5\\pos({W // 2},{cy:.0f})\\fad(160,0)\\fs{size}}}{line}")
+        line_y = cy - line_h * (len(lines) - 1) / 2 + i * line_h - f.cap_shift(size)
+        ev.append(f"Dialogue: 4,{span},Hook,,0,0,0,,{{\\an5\\pos({cx:.0f},{line_y:.0f})\\fad(160,0)\\fs{size}}}{line}")
     return ev
 
 
-def build_ass(words, start, end, hook, style_name, highlight, hook_y, cap_y) -> str:
+def build_ass(words, start, end, hook, style_name, highlight, hook_y, cap_y, hook_x=W // 2) -> str:
     st = STYLES.get(style_name, STYLES["bounce"])
     words = [dict(w, s=w["s"] - CAPTION_LEAD, e=w["e"] - CAPTION_LEAD) for w in words]
     strong = {_key(h) for h in highlight if _key(h)}
@@ -195,7 +214,7 @@ Style: Hook,{HOOK['font']},{HOOK['size']},&H00{HOOK['ink']},&H00{HOOK['ink']},&H
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     dur = end - start
-    ev = _hook_events(_clean(hook), dur, hook_y)
+    ev = _hook_events(_clean(hook), dur, hook_x, hook_y)
     f = _Font.get(st["font"])
     inside = [dict(w, w=_clean(w["w"])) for w in words if w["s"] >= start - 0.05 and w["s"] < end]
     inside = sorted((w for w in inside if w["w"]), key=lambda w: w["s"])
@@ -258,11 +277,15 @@ def _crop_rect(rect, src_w, src_h, out_w, out_h):
 
 
 def _filter(layout, fg_h, src_w, src_h, clip):
-    if layout == "split":
-        face = _crop_rect(clip.get("face_rect"), src_w, src_h, W, 640)
-        game = _crop_rect(clip.get("gameplay_rect"), src_w, src_h, W, H - 640)
-        return (f"[0:v]fps={config.OUT_FPS},split=2[face0][game0];"
-                f"[face0]{face}[face];[game0]{game}[game];[face][game]vstack=inputs=2,setsar=1[v0];")
+    if layout in SPLIT_LAYOUTS:
+        ratio = max(20, min(80, int(clip.get("facecam_ratio", 34) or 34))) / 100
+        face_h = max(2, int(round(H * ratio / 2)) * 2)
+        game_h = H - face_h
+        face = _crop_rect(clip.get("face_rect"), src_w, src_h, W, face_h)
+        game = _crop_rect(clip.get("gameplay_rect"), src_w, src_h, W, game_h)
+        panels = (f"[face0]{face}[face];[game0]{game}[game];[face][game]vstack=inputs=2" if layout == "split"
+                  else f"[face0]{face}[face];[game0]{game}[game];[game][face]vstack=inputs=2")
+        return f"[0:v]fps={config.OUT_FPS},split=2[face0][game0];{panels},setsar=1[v0];"
     if layout == "crop":
         return f"[0:v]fps={config.OUT_FPS},scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},setsar=1[v0];"
     return (f"[0:v]fps={config.OUT_FPS},split=2[a][b];"
@@ -334,13 +357,17 @@ def render_clip(src: Path, out_dir: Path, name: str, clip: dict, words: list, sr
     """Writes <name>.mp4, <name>.jpg and <name>.ass into out_dir. Returns file names."""
     out_dir.mkdir(parents=True, exist_ok=True)
     start, end = clip["start"], clip["end"]
-    layout, fg_h, hook_y, cap_y = geometry(src_w, src_h, clip.get("layout", "blur"))
-    if layout == "split":
+    layout, fg_h, default_hook_x, default_hook_y, cap_y = geometry(src_w, src_h, clip.get("layout", "blur"), clip.get("facecam_ratio", 34))
+    hook_x = clip.get("hook_x")
+    hook_y = clip.get("hook_y")
+    hook_x = round(max(0.05, min(0.95, float(hook_x))) * W) if hook_x is not None else default_hook_x
+    hook_y = round(max(0.05, min(0.95, float(hook_y))) * H) if hook_y is not None else default_hook_y
+    if layout in SPLIT_LAYOUTS:
         clip = dict(clip,
                     face_rect=clean_rect(clip.get("face_rect") or {"x": .02, "y": .02, "w": .32, "h": .32}),
                     gameplay_rect=clean_rect(clip.get("gameplay_rect") or {"x": .04, "y": .26, "w": .92, "h": .70}))
     ass = build_ass(words if clip.get("captions", True) else [], start, end, clip.get("hook", ""), clip.get("style", "bounce"),
-                    clip.get("highlight_words", []), hook_y, cap_y)
+                    clip.get("highlight_words", []), hook_y, cap_y, hook_x)
     # The clip is made in a short work folder and moved into place afterwards. The caption step of ffmpeg cannot
     # open files whose full path is longer than 260 characters on Windows, which a data folder deep inside other
     # folders easily reaches. Inside the work folder every name is short and relative (a drive colon would also
@@ -375,7 +402,7 @@ def _render_in(work: Path, src: Path, out_dir: Path, name: str, start, end, layo
     encoders = []
     # QSV can stall on Windows when the CPU filter graph includes vertical split crops
     # and a rendered badge. Use x264 for those clips instead of waiting ten minutes for QSV.
-    custom_graph = bool(brand) or layout == "split"
+    custom_graph = bool(brand) or layout in SPLIT_LAYOUTS
     if _qsv_ok is not False and not custom_graph:
         encoders.append(("qsv", ["nv12", "-c:v", "h264_qsv", "-global_quality", "23", "-preset", "fast"]))
     encoders.append(("x264", ["yuv420p", "-c:v", "libx264", "-crf", "21", "-preset", "ultrafast"]))

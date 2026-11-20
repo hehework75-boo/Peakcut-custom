@@ -128,10 +128,11 @@ on_clip_ready: list = []   # callbacks (job, clip), run once when a clip first f
 
 DEFAULTS = {"max_clips": 6, "min_len": 15, "max_len": 60, "style": "bounce", "layout": "blur", "quality": 720,
             "range_start": None, "range_end": None, "captions": True, "clip_instructions": "",
-            "brand_platform": "off", "brand_platforms": [], "brand_name": "", "brand_position": "top-left"}
+            "brand_platform": "off", "brand_platforms": [], "brand_name": "", "brand_position": "top-left",
+            "visual_review": True, "face_rect": None, "gameplay_rect": None, "facecam_ratio": 34, "hook_x": None, "hook_y": None}
 
 
-LIMITS = {"max_clips": (1, 20), "min_len": (5, 120), "max_len": (10, 180), "quality": (360, 1080)}
+LIMITS = {"max_clips": (1, 20), "min_len": (5, 120), "max_len": (10, 180), "quality": (360, 1080), "facecam_ratio": (20, 80)}
 
 
 def clean_options(options) -> dict:
@@ -143,6 +144,11 @@ def clean_options(options) -> dict:
                 raise ValueError("Captions must be on or off.")
             out[k] = v
             continue
+        if k == "visual_review":
+            if not isinstance(v, bool):
+                raise ValueError("Visual review must be on or off.")
+            out[k] = v
+            continue
         if k not in DEFAULTS or v in ("", None):
             continue
         if k in LIMITS:
@@ -151,7 +157,7 @@ def clean_options(options) -> dict:
         elif k == "style":
             v = v if v in render.STYLES else DEFAULTS["style"]
         elif k == "layout":
-            v = v if v in render.LAYOUTS else DEFAULTS["layout"]
+            v = "split" if v in ("face_left", "game_left") else v if v in render.LAYOUTS else DEFAULTS["layout"]
         elif k == "clip_instructions":
             v = "".join(ch for ch in str(v) if ch in "\n\t" or ord(ch) >= 32).strip()[:500]
         elif k == "brand_platform":
@@ -162,6 +168,15 @@ def clean_options(options) -> dict:
             v = v if v in ("top-left", "top-right", "bottom-left", "bottom-right") else "top-left"
         elif k == "brand_name":
             v = "".join(ch for ch in str(v) if ch in "\n\t" or ord(ch) >= 32).strip()[:80]
+        elif k in ("face_rect", "gameplay_rect"):
+            v = render.clean_rect(v)
+        elif k in ("hook_x", "hook_y"):
+            v = float(v)
+            if not math.isfinite(v):
+                raise ValueError("Title position must be between 5 and 95 percent.")
+            if v > 1:
+                v /= 100
+            v = max(0.05, min(0.95, v))
         else:                                    # range_start, range_end: seconds into the video
             v = float(v)
             if not math.isfinite(v) or v < 0:
@@ -327,7 +342,8 @@ def create(source: dict, options: dict, enqueue=True, creator=None, kind="video"
     if c:
         d = creators.root(c["id"]) / ("live" if kind == "live" else "videos") / jid
         base = {**DEFAULTS, **{k: c[k] for k in ("max_clips", "min_len", "max_len", "style", "layout", "captions",
-                                                   "clip_instructions", "brand_platform", "brand_platforms", "brand_name", "brand_position")}}
+                                                   "clip_instructions", "brand_platform", "brand_platforms", "brand_name", "brand_position",
+                                                   "visual_review", "face_rect", "gameplay_rect", "facecam_ratio", "hook_x", "hook_y")}}
     else:
         d, base, creator = config.user_dir(ctx.uid()) / "jobs" / jid, dict(DEFAULTS), None
     opts = {**base, **clean_options(options)}
@@ -426,8 +442,8 @@ def request_render(jid, cid, changes: dict):
     if new.get("style") not in render.STYLES:
         new["style"] = DEFAULTS["style"]
     if new.get("layout") not in render.LAYOUTS:
-        new["layout"] = DEFAULTS["layout"]
-    for k in ("brand_platform", "brand_platforms", "brand_name", "brand_position"):
+        new["layout"] = "split" if new.get("layout") in ("face_left", "game_left") else DEFAULTS["layout"]
+    for k in ("brand_platform", "brand_platforms", "brand_name", "brand_position", "facecam_ratio", "hook_x", "hook_y"):
         if k in changes:
             new.update(clean_options({k: changes[k]}))
     for k in ("face_rect", "gameplay_rect"):
@@ -458,6 +474,23 @@ def render_one(job, clip, words):
                      hook=roman.to_roman(clip.get("hook") or ""),
                      brand_fallback=job.get("uploader") or (owner or {}).get("name", ""))
         near = _caption_words(job, clip, words, off) if clip.get("captions", True) else []
+        wants_visual = clip.get("visual_review", job.get("options", {}).get("visual_review", False))
+        if wants_visual and not clip.get("visual_reviewed"):
+            try:
+                visual = brain.review_visual(src, local, words, clip.get("start"), clip.get("end"))
+            except ctx.Cancelled:
+                raise
+            except Exception:  # noqa: BLE001 - visual review is optional and must not block a clip
+                visual = None
+            clip["visual_reviewed"] = True
+            if visual:
+                clip.update(visual_score=visual["score"], visual_action=visual["action"], visual_reason=visual["reason"],
+                            visual_tokens=visual.get("tokens", 0), visual_status="checked")
+                if clip.get("score", 0) > 0:
+                    clip["score"] = round(0.75 * clip["score"] + 0.25 * visual["score"])
+                job.setdefault("ai", {})["tokens"] = int(job.get("ai", {}).get("tokens", 0)) + visual.get("tokens", 0)
+            else:
+                clip["visual_status"] = "unavailable"
         out = render.render_clip(src, d / "clips", clip["id"], local, near, job["width"], job["height"])
         ctx.check_cancelled()
         clip.update(out, status="done", version=clip.get("version", 0) + 1, error=None)
@@ -815,6 +848,10 @@ def _run_job(job):
                      captions=o.get("captions", True), brand_platform=o.get("brand_platform", "off"),
                      brand_platforms=o.get("brand_platforms", []),
                      brand_name=o.get("brand_name", ""), brand_position=o.get("brand_position", "top-left"),
+                     visual_review=o.get("visual_review", True), face_rect=o.get("face_rect"),
+                     gameplay_rect=o.get("gameplay_rect"), facecam_ratio=o.get("facecam_ratio", 34),
+                     hook_x=o.get("hook_x"), hook_y=o.get("hook_y"),
+                     clip_instructions=o.get("clip_instructions", ""),
                      status="queued", version=0)
             job["clips"].append(c)
             futures.append((renders.submit(ctx.bind(make), c, list(words)), c))
@@ -835,7 +872,8 @@ def _run_job(job):
     fetch.shutdown(wait=False)
     del audio
     clips = job["clips"]
-    job["ai"] = {"model": model, "tokens": tokens, "log": notes[-5:],
+    visual_tokens = sum(int(c.get("visual_tokens", 0)) for c in clips)
+    job["ai"] = {"model": model, "tokens": tokens + visual_tokens, "log": notes[-5:],
                  "note": "The AI was unavailable, so clips were picked by loudness only." if clips and not model else ""}
     stage = "Done" if clips else "Done, but nothing clip-worthy was found"
     _set(job, status="done", stage=stage, progress=1.0, took=round(time.time() - t0))

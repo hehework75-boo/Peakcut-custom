@@ -251,6 +251,16 @@ def call(model: str, prompt: str, schema: dict):
     return {"gemini": _gemini, "openai": _openai, "anthropic": _anthropic}[how](model, prompt, schema)
 
 
+def call_images(model: str, prompt: str, images: list[str], schema: dict):
+    """Ask the configured model to read a small set of base64 JPEGs as well as text.
+
+    Some chat models cannot see images. Their normal error is passed to the caller, which can keep using its
+    transcript-only result without turning an optional visual check into a failed clip.
+    """
+    how = PROVIDERS[provider()][2]
+    return {"gemini": _gemini_images, "openai": _openai_images, "anthropic": _anthropic_images}[how](model, prompt, images, schema)
+
+
 def _gemini(model, prompt, schema):
     body = {"contents": [{"role": "user", "parts": [{"text": prompt}]}],
             "generationConfig": {"temperature": 0.4, "responseMimeType": "application/json", "responseSchema": schema}}
@@ -266,7 +276,9 @@ def _gemini(model, prompt, schema):
 
 def _openai(model, prompt, schema):
     headers = {"Authorization": f"Bearer {key()}"} if key() else {}
-    body = {"model": model, "messages": [{"role": "user", "content": _wrapped(prompt, schema)}]}
+    # Set a practical output cap instead of letting gateways such as OpenRouter
+    # reserve their 16k default, which can exceed a key's remaining credit limit.
+    body = {"model": model, "max_tokens": 8192, "messages": [{"role": "user", "content": _wrapped(prompt, schema)}]}
     # Most services accept these two extras; a few models refuse one of them, so they are dropped on a refusal.
     extras = [{"temperature": 0.4, "response_format": {"type": "json_object"}}, {"response_format": {"type": "json_object"}}, {}]
     r = None
@@ -284,6 +296,53 @@ def _openai(model, prompt, schema):
 def _anthropic(model, prompt, schema):
     body = {"model": model, "max_tokens": 8192, "messages": [{"role": "user", "content": _wrapped(prompt, schema)}]}
     r = httpx.post(f"{base_url()}/messages", json=body, timeout=180,
+                   headers={"x-api-key": key(), "anthropic-version": "2023-06-01"})
+    if r.status_code != 200:
+        _fail(r, model)
+    data = r.json()
+    text = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
+    u = data.get("usage") or {}
+    return _parse(text), int(u.get("input_tokens") or 0), int(u.get("output_tokens") or 0)
+
+
+def _gemini_images(model, prompt, images, schema):
+    parts = [{"text": prompt}]
+    parts.extend({"inline_data": {"mime_type": "image/jpeg", "data": image}} for image in images)
+    body = {"contents": [{"role": "user", "parts": parts}],
+            "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json", "responseSchema": schema}}
+    r = httpx.post(f"{base_url()}/{model}:generateContent", json=body, headers={"x-goog-api-key": key()}, timeout=45)
+    if r.status_code != 200:
+        _fail(r, model)
+    data = r.json()
+    text = "".join(p.get("text", "") for p in data["candidates"][0]["content"]["parts"])
+    u = data.get("usageMetadata", {})
+    sent = int(u.get("promptTokenCount") or 0)
+    return json.loads(text), sent, max(0, int(u.get("totalTokenCount") or 0) - sent)
+
+
+def _openai_images(model, prompt, images, schema):
+    headers = {"Authorization": f"Bearer {key()}"} if key() else {}
+    content = [{"type": "text", "text": _wrapped(prompt, schema)}]
+    content.extend({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image}"}} for image in images)
+    body = {"model": model, "max_tokens": 8192, "messages": [{"role": "user", "content": content}]}
+    extras = [{"temperature": 0.2, "response_format": {"type": "json_object"}}, {"response_format": {"type": "json_object"}}, {}]
+    r = None
+    for extra in extras:
+        r = httpx.post(f"{base_url()}/chat/completions", json={**body, **extra}, headers=headers, timeout=45)
+        if r.status_code not in (400, 422):
+            break
+    if r.status_code != 200:
+        _fail(r, model)
+    data = r.json()
+    u = data.get("usage") or {}
+    return _parse(data["choices"][0]["message"].get("content")), int(u.get("prompt_tokens") or 0), int(u.get("completion_tokens") or 0)
+
+
+def _anthropic_images(model, prompt, images, schema):
+    content = [{"type": "text", "text": _wrapped(prompt, schema)}]
+    content.extend({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image}} for image in images)
+    body = {"model": model, "max_tokens": 1024, "messages": [{"role": "user", "content": content}]}
+    r = httpx.post(f"{base_url()}/messages", json=body, timeout=45,
                    headers={"x-api-key": key(), "anthropic-version": "2023-06-01"})
     if r.status_code != 200:
         _fail(r, model)

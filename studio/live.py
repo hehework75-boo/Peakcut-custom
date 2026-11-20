@@ -457,6 +457,11 @@ class Session:
         self.n += 1
         c.update(id=f"clip{self.n:03d}", style=self.settings["style"], layout=self.settings["layout"],
                  captions=self.job["options"].get("captions", True),
+                 visual_review=self.settings.get("visual_review", True),
+                 face_rect=self.settings.get("face_rect"), gameplay_rect=self.settings.get("gameplay_rect"),
+                 facecam_ratio=self.settings.get("facecam_ratio", 34),
+                 hook_x=self.settings.get("hook_x"), hook_y=self.settings.get("hook_y"),
+                 clip_instructions=self.settings.get("clip_instructions", ""),
                  brand_platform=self.settings.get("brand_platform", "off"),
                  brand_platforms=self.settings.get("brand_platforms", []),
                  brand_name=self.settings.get("brand_name", ""),
